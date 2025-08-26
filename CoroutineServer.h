@@ -83,6 +83,7 @@ public:
         INFO_LOG("Task deconstruction function.");
         if(_handle) {
             _handle.destroy();
+            _handle = {};
         }
     }
 
@@ -131,6 +132,10 @@ public:
             _handle = {};
             return result;
         }
+    }
+
+    bool Done() {
+        return !_handle || _handle.done();
     }
 
     T get() {
@@ -239,7 +244,7 @@ struct Selector {
             }
         }
         for(auto itr = mapFd2WriteHandle.begin(); itr != mapFd2WriteHandle.end();) {
-            if(FD_ISSET(itr->first, &readFd)) {
+            if(FD_ISSET(itr->first, &writeFd)) {
                 auto vec = std::move(itr->second);
                 itr = mapFd2WriteHandle.erase(itr);
                 vecResumes.insert(vecResumes.end(), vec.begin(), vec.end());
@@ -313,8 +318,6 @@ private:
     int listenSocket_{INVALID_SOCKET_VALUE};
 
     bool running_{false};
-
-    std::vector<int> vecClientSockets_;
 
     Selector sel_;
 

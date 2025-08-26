@@ -11,15 +11,14 @@ AsyncServer::~AsyncServer() {
 void AsyncServer::StopServer() {
     running_ = false;
     sel_.ShutDown();
-    for(auto clientSocket : vecClientSockets_) {
-        close(clientSocket);
+    for(auto &clientSocket : mapFd2Task_) {
+        close(clientSocket.first);
     }
-    vecClientSockets_.clear();
+    mapFd2Task_.clear();
     if(listenSocket_ != INVALID_SOCKET_VALUE) {
         close(listenSocket_);
         listenSocket_ = INVALID_SOCKET_VALUE;
     }
-    mapFd2Task_.clear();
 }
 
 Task<bool> AsyncServer::StartServer(uint16_t prrt) {
@@ -98,7 +97,7 @@ Task<void> AsyncServer::AcceptLoop() {
                 break;
             }
             if(errno == EINTR || errno == ECONNABORTED) {
-                INFO_LOG("Failed to accept errno: %d, errmsg: %s, restart", errno, strerror(errno))
+                INFO_LOG("Failed to accept errno: %d, errmsg: %s, restart", errno, strerror(errno));
                 continue;
             }
             ERROR_LOG("Failed to accept errno: %d, errmsg: %s", errno, strerror(errno));
@@ -113,6 +112,16 @@ Task<void> AsyncServer::AcceptLoop() {
 void AsyncServer::RunServer() {
     while(running_) {
         sel_.RunOnce(listenSocket_);
+        for(auto itr = mapFd2Task_.begin(); itr != mapFd2Task_.end();) {
+            if(itr->second.Done()) {
+                INFO_LOG("Find task has been done, fd[%d]", itr->first);
+                sel_.CancelFd(itr->first);
+                close(itr->first);
+                itr = mapFd2Task_.erase(itr);
+            } else {
+                ++itr;
+            }
+        }
     }
 }
 
@@ -127,8 +136,6 @@ Task<void> AsyncServer::SessionEcho(int cliendFd) {
         co_await SendData(cliendFd, readData);
     }
 
-    close(cliendFd);
-    sel_.CancelFd(cliendFd);
     co_return;
 }
 
@@ -160,7 +167,7 @@ Task<void> AsyncServer::SendData(int clientFd, const std::string& data) {
     int writeLen = 0;
     int dataLen = data.length();
     while(writeLen < dataLen) {
-        int len = send(clientFd, data.data(), dataLen - writeLen, 0);
+        int len = send(clientFd, data.data() + writeLen, dataLen - writeLen, 0);
         if(len > 0) {
             INFO_LOG("Succeed to write data len[%d]", len);
             writeLen += len;
