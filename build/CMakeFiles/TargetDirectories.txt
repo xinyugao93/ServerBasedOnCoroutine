@@ -1,6 +1,0 @@
-/home/xinyugao/project/server/build/CMakeFiles/Server.dir
-/home/xinyugao/project/server/build/CMakeFiles/edit_cache.dir
-/home/xinyugao/project/server/build/CMakeFiles/rebuild_cache.dir
-/home/xinyugao/project/server/build/spdlog/CMakeFiles/spdlog.dir
-/home/xinyugao/project/server/build/spdlog/CMakeFiles/edit_cache.dir
-/home/xinyugao/project/server/build/spdlog/CMakeFiles/rebuild_cache.dir
