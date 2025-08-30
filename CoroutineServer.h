@@ -1,4 +1,5 @@
 #include "Logger.h"
+#include "MsgType.h"
 #include <coroutine>
 #include <functional>
 #include <exception>
@@ -293,8 +294,22 @@ struct OnWritable {
     }
 };
 
+struct RecvBuf {
+    char* recvBuf{nullptr};
+    PMsgHead pHead{nullptr};
+    uint32_t usedBuf{0};
 
+    RecvBuf() = default;
+    explicit RecvBuf(char* buf) : recvBuf(buf) {}
+};
+
+struct ReqData {
+    uint32_t reqId{0};
+    int32_t  reqDataLen{0};
+    MsgType  type;
+};
 class AsyncServer {
+    static constexpr uint32_t BUFFER_SIZE = 10 << 20;
 public:
     AsyncServer() = default;
     ~AsyncServer();
@@ -310,9 +325,11 @@ private:
 
     Task<void> SessionEcho(int clientFd);
 
-    Task<ssize_t> ReadData(int clientFd, std::string& readData);
+    Task<ReqData> ReadData(int clientFd, std::string& readData);
 
     Task<void> SendData(int clientFd, const std::string& data);
+
+    void _MakeResponse(uint32_t msgId, MsgType type, const std::string& respMsg, std::string& response);
 
 private:
     int listenSocket_{INVALID_SOCKET_VALUE};
@@ -326,4 +343,6 @@ private:
     Task<void> acceptTask_;
 
     std::unordered_map<int, Task<void>> mapFd2Task_;
+    
+    std::unordered_map<int, RecvBuf> mapFd2RecvBuf_;
 };

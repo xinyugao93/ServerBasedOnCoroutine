@@ -1,4 +1,5 @@
 #include "CoroutineServer.h"
+#include "RequestHandler.h"
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h> 
@@ -73,6 +74,22 @@ Task<bool> AsyncServer::StartServer(uint16_t prrt) {
     co_return true;
 }
 
+void AsyncServer::RunServer() {
+    while(running_) {
+        sel_.RunOnce(listenSocket_);
+        for(auto itr = mapFd2Task_.begin(); itr != mapFd2Task_.end();) {
+            if(itr->second.Done()) {
+                INFO_LOG("Find task has been done, fd[%d]", itr->first);
+                sel_.CancelFd(itr->first);
+                close(itr->first);
+                itr = mapFd2Task_.erase(itr);
+            } else {
+                ++itr;
+            }
+        }
+    }
+}
+
 Task<void> AsyncServer::AcceptLoop() {
     INFO_LOG("start accept loop coroutine");
     while(running_) {
@@ -89,6 +106,7 @@ Task<void> AsyncServer::AcceptLoop() {
                 std::string clientIp(INET_ADDRSTRLEN, '0');
                 inet_ntop(AF_INET, &clientAddress.sin_addr, clientIp.data(), clientIp.length());
                 INFO_LOG("accept client ip[%s:%hu] connect.", clientIp.c_str(), ntohs(clientAddress.sin_port));
+                mapFd2RecvBuf_.emplace(clientFd, new char[BUFFER_SIZE]);
                 mapFd2Task_.emplace(clientFd, SessionEcho(clientFd));
                 continue;
             }
@@ -109,58 +127,95 @@ Task<void> AsyncServer::AcceptLoop() {
     co_return;
 }
 
-void AsyncServer::RunServer() {
-    while(running_) {
-        sel_.RunOnce(listenSocket_);
-        for(auto itr = mapFd2Task_.begin(); itr != mapFd2Task_.end();) {
-            if(itr->second.Done()) {
-                INFO_LOG("Find task has been done, fd[%d]", itr->first);
-                sel_.CancelFd(itr->first);
-                close(itr->first);
-                itr = mapFd2Task_.erase(itr);
-            } else {
-                ++itr;
-            }
-        }
-    }
-}
-
 Task<void> AsyncServer::SessionEcho(int cliendFd) {
     std::string readData;
     while(true) {
         readData.clear();
-        ssize_t n = co_await ReadData(cliendFd, readData);
-        if(n <= 0) {
+        INFO_LOG("client fd[%d] co_await ReadData", cliendFd)
+        auto req = co_await ReadData(cliendFd, readData);
+        INFO_LOG("co_await read data len[%lu]", req.reqDataLen);
+        if(req.reqDataLen <= 0) {
             break;
         }
-        co_await SendData(cliendFd, readData);
+
+        RequestHandler handler;
+        std::string respMsg;
+        handler.HandleRequest(req.type, readData, respMsg);
+        _MakeResponse(req.reqId, req.type, readData, respMsg);
+
+        INFO_LOG("client fd[%d] co_await SendData, response len[%u]", cliendFd, (uint32_t)respMsg.length())
+        co_await SendData(cliendFd, respMsg);
     }
 
     co_return;
 }
 
-Task<ssize_t> AsyncServer::ReadData(int clientFd, std::string& readData) {
-    while(true) {
-        readData.resize(4096);
-        ssize_t readLen = recv(clientFd, readData.data(), readData.length(), 0);
-        if(readLen > 0) {
-            INFO_LOG("Succeed to read data len[%d]", readLen);
-            co_return readLen;
-        } else if(0 == readLen) {
-            INFO_LOG("Peer close the connection");
-            co_return 0;
+Task<ReqData> AsyncServer::ReadData(int clientFd, std::string& readData) {
+    auto itr = mapFd2RecvBuf_.find(clientFd);
+    if(itr == mapFd2RecvBuf_.end()) {
+        co_return ReqData{0, -1, MsgType::UNKNOWN};
+    }
+
+    int readLen = sizeof(MsgHead);
+    INFO_LOG("request header len[%d]", readLen);
+    while(readLen > 0) {
+        int len = recv(clientFd, itr->second.recvBuf + itr->second.usedBuf, readLen, 0);
+        if(len < 0) {
+            if(EINTR == errno) {
+                INFO_LOG("Failed to read data, errno: %d, errmsg: %s, ignore", errno, strerror(errno));
+                continue;
+            } else if(EAGAIN == errno || EWOULDBLOCK == errno) {
+                INFO_LOG("Failed to read data, errno: %d, errmsg: %s, wait to read data", errno, strerror(errno));
+                co_await OnReadable{&sel_, clientFd};
+                continue;
+            } 
+            
+            INFO_LOG("Failed to read data, errno: %d, errmsg: %s, connection closed", errno, strerror(errno));
+            co_return ReqData{0, -1, MsgType::UNKNOWN};;
+        } else if(0 == len) {
+            INFO_LOG("Peer closed the connection");
+            co_return ReqData{0, 0, MsgType::UNKNOWN};
         }
 
-        if(errno == EINTR) {
-            INFO_LOG("Failed to read data errno: %d, errmsg: %s, ignore", errno, strerror(errno));
-            continue;
-        } else if(errno == EAGAIN || errno == EWOULDBLOCK) {
-            co_await OnReadable{&sel_, clientFd};
-            continue;
-        }
-        break;
+        itr->second.usedBuf += len;
+        readLen             -= len;
     }
-    co_return -1;
+    INFO_LOG("request used buf len[%u]", itr->second.usedBuf);
+
+    itr->second.pHead = reinterpret_cast<PMsgHead>(itr->second.recvBuf);
+    readLen = itr->second.pHead->dataLen;
+    INFO_LOG("request datalen[%d]", readLen);
+    while(readLen > 0) {
+        int len = recv(clientFd, itr->second.recvBuf + itr->second.usedBuf, readLen, 0);
+        if(len < 0) {
+            if(EINTR == errno) {
+                INFO_LOG("Failed to read data, errno: %d, errmsg: %s, ignore", errno, strerror(errno));
+                continue;
+            } else if(EAGAIN == errno || EWOULDBLOCK == errno) {
+                INFO_LOG("Failed to read data, errno: %d, errmsg: %s, wait to read data", errno, strerror(errno));
+                co_await OnReadable{&sel_, clientFd};
+                continue;
+            } 
+            
+            INFO_LOG("Failed to read data, errno: %d, errmsg: %s, connection closed", errno, strerror(errno));
+            co_return ReqData{0, -1, MsgType::UNKNOWN};;
+        } else if(0 == len) {
+            INFO_LOG("Peer closed the connection");
+            co_return ReqData{0, 0, MsgType::UNKNOWN};;
+        }
+
+        itr->second.usedBuf += len;
+        readLen             -= len;
+    }
+
+    readLen = itr->second.pHead->dataLen;
+    uint32_t msgId = itr->second.pHead->msgId;
+    MsgType type = itr->second.pHead->type;
+    readData.resize(readLen);
+    memcpy(readData.data(), itr->second.recvBuf + sizeof(MsgHead), readLen);
+    itr->second.pHead = nullptr;
+    itr->second.usedBuf = 0;
+    co_return ReqData{msgId, readLen, type};
 }
 
 Task<void> AsyncServer::SendData(int clientFd, const std::string& data) {
@@ -181,4 +236,16 @@ Task<void> AsyncServer::SendData(int clientFd, const std::string& data) {
         break;
     }
     co_return;
+}
+
+void AsyncServer::_MakeResponse(uint32_t msgId, MsgType type, const std::string& respMsg, std::string& response) {
+    uint32_t totalLen = sizeof(MsgHead) + respMsg.length();
+    response.resize(totalLen);
+
+    auto head = (PMsgHead)response.data();
+    head->msgId   = msgId;
+    head->type    = type;
+    head->dataLen = respMsg.length();
+
+    memcpy(response.data() + sizeof(MsgHead), respMsg.data(), respMsg.length());
 }

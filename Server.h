@@ -9,12 +9,6 @@
 #include <cstring>
 #include <string>
 
-typedef struct MsgHead {
-    uint32_t msgId;
-    MsgType type;
-    uint32_t dataLen;
-}* PMsgHead;
-
 class Server {
     static constexpr int32_t PORT = 9999;
     static constexpr uint32_t MAX_EVENTS = 64;
