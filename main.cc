@@ -1,4 +1,5 @@
 #include "CoroutineServer.h"
+#include "Server.h"
 #include "Logger.h"
 #include <cstdio>
 #include <numeric>
@@ -20,6 +21,13 @@ int main() {
     }
 
     server.RunServer();
+
+    // if(!Server::GetInstance()->Start()) {
+    //      ERROR_LOG("start server failed");
+    //      return -1;
+    // }
+    // Server::GetInstance()->Run();
+
 
     return 0;
 }

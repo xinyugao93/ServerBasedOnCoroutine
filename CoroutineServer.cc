@@ -133,7 +133,7 @@ Task<void> AsyncServer::SessionEcho(int cliendFd) {
         readData.clear();
         INFO_LOG("client fd[%d] co_await ReadData", cliendFd)
         auto req = co_await ReadData(cliendFd, readData);
-        INFO_LOG("co_await read data len[%lu]", req.reqDataLen);
+        INFO_LOG("co_await read data len[%lu] readData[%s]", req.reqDataLen, readData.c_str());
         if(req.reqDataLen <= 0) {
             break;
         }
@@ -141,10 +141,11 @@ Task<void> AsyncServer::SessionEcho(int cliendFd) {
         RequestHandler handler;
         std::string respMsg;
         handler.HandleRequest(req.type, readData, respMsg);
-        _MakeResponse(req.reqId, req.type, readData, respMsg);
+        std::string response;
+        _MakeResponse(req.reqId, req.type, respMsg, response);
 
-        INFO_LOG("client fd[%d] co_await SendData, response len[%u]", cliendFd, (uint32_t)respMsg.length())
-        co_await SendData(cliendFd, respMsg);
+        INFO_LOG("client fd[%d] co_await SendData, response len[%u]", cliendFd, (uint32_t)response.length())
+        co_await SendData(cliendFd, response);
     }
 
     co_return;
